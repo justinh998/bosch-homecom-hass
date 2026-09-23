@@ -826,6 +826,39 @@ class BoschComSensorDhw(BoschComSensorBase):
                 currentTemperatureLevel_value = (
                     entry.get("currentTemperatureLevel") or {}
                 ).get("value", "unknown")
+                if entry["dayconsumption"].get("recording") is not None:
+                    dayconsumption_value = round(
+                        sum(
+                            item["y"]
+                            for item in entry["dayconsumption"]["recording"]
+                            if item["c"] != 0
+                        ),
+                        3,
+                    )
+                else:
+                    dayconsumption_value = "unknown"
+                if entry["monthconsumption"].get("recording") is not None:
+                    monthconsumption_value = round(
+                        sum(
+                            item["y"]
+                            for item in entry["monthconsumption"]["recording"]
+                            if item["c"] != 0
+                        ),
+                        3,
+                    )
+                else:
+                    monthconsumption_value = "unknown"
+                if entry["yearconsumption"].get("recording") is not None:
+                    yearconsumption_value = round(
+                        sum(
+                            item["y"]
+                            for item in entry["yearconsumption"]["recording"]
+                            if item["c"] != 0
+                        ),
+                        3,
+                    )
+                else:
+                    yearconsumption_value = "unknown"
 
                 result = {
                     "operationMode": operationMode_value,
@@ -833,6 +866,9 @@ class BoschComSensorDhw(BoschComSensorBase):
                     "charge": charge_value,
                     "chargeRemainingTime": chargeRemainingTime_value,
                     "singleChargeSetpoint": singleChargeSetpoint_value,
+                    "dayconsumption": dayconsumption_value,
+                    "monthconsumption": monthconsumption_value,
+                    "yearconsumption": yearconsumption_value,
                 }
 
                 for item, temp_item in (entry.get("tempLevel") or {}).items():
@@ -916,6 +952,39 @@ class BoschComSensorHc(BoschComSensorBase):
                 coolingRoomTempSetpoint_value = (
                     entry.get("coolingRoomTempSetpoint") or {}
                 ).get("value", "unknown")
+                if entry["dayconsumption"].get("recording") is not None:
+                    dayconsumption_value = round(
+                        sum(
+                            item["y"]
+                            for item in entry["dayconsumption"]["recording"]
+                            if item["c"] != 0
+                        ),
+                        3,
+                    )
+                else:
+                    dayconsumption_value = "unknown"
+                if entry["monthconsumption"].get("recording") is not None:
+                    monthconsumption_value = round(
+                        sum(
+                            item["y"]
+                            for item in entry["monthconsumption"]["recording"]
+                            if item["c"] != 0
+                        ),
+                        3,
+                    )
+                else:
+                    monthconsumption_value = "unknown"
+                if entry["yearconsumption"].get("recording") is not None:
+                    yearconsumption_value = round(
+                        sum(
+                            item["y"]
+                            for item in entry["yearconsumption"]["recording"]
+                            if item["c"] != 0
+                        ),
+                        3,
+                    )
+                else:
+                    yearconsumption_value = "unknown"
 
                 return {
                     "currentSuWiMode": currentSuWiMode_value,
@@ -946,6 +1015,9 @@ class BoschComSensorHc(BoschComSensorBase):
                     "roomInfluence": (entry.get("roomInfluence") or {}).get(
                         "value", "unknown"
                     ),
+                    "dayconsumption": dayconsumption_value,
+                    "monthconsumption": monthconsumption_value,
+                    "yearconsumption": yearconsumption_value,
                 }
 
         return {
