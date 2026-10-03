@@ -77,23 +77,26 @@
       },
       "local_credentials": {
         "title": "Lokale netwerktoegang",
-        "description": "Lees gateway {gateway} via je lokale netwerk in plaats van alleen via de Bosch-cloud. Dit is alleen-lezen: besturing blijft volledig via de cloud lopen.\n\nVereist gateway-firmware 15.00.01 of nieuwer.\n\n**Voordat je verzendt:** houd de WLAN- en Wireless-knoppen op de gateway ongeveer een seconde samen ingedrukt. De leds knipperen kort blauw, waarna de gateway vijf minuten lang een tokenverzoek accepteert.\n\nVoer de Login- en Pass-waarden van het gatewaylabel in. Streepjes in Pass worden automatisch verwijderd. Het token wordt opgeslagen en hergebruikt, dus dit is eenmalig.\n\nVink het verwijdervak aan om lokale toegang uit te schakelen.",
+        "description": "Lees gateway {gateway} via je lokale netwerk in plaats van alleen via de Bosch-cloud. Dit is alleen-lezen: besturing blijft volledig via de cloud lopen.\n\nVereist gateway-firmware 15.00.01 of nieuwer.\n\n**Voordat je verzendt:** houd de WLAN- en Wireless-knoppen op de gateway ongeveer een seconde samen ingedrukt. De leds knipperen kort blauw, waarna de gateway vijf minuten lang een tokenverzoek accepteert.\n\nVoer de Login- en Pass-waarden van het gatewaylabel in. Streepjes in Pass worden automatisch verwijderd. Het token wordt opgeslagen en hergebruikt, dus dit is eenmalig.\n\n**Heb je al een token** voor deze gateway, bijvoorbeeld van een andere integratie? Plak het dan in het tokenveld; Login, Pass en het indrukken van de knoppen zijn dan niet nodig. Een geplakt token wordt door deze integratie nooit ingetrokken.\n\nVink het verwijdervak aan om lokale toegang uit te schakelen.",
         "data": {
           "local_host": "Hostnaam of IP-adres van de gateway",
           "local_login": "Login (van het gatewaylabel)",
           "local_password": "Pass (van het gatewaylabel)",
+          "local_token": "Bestaand toegangstoken (in plaats van Login en Pass)",
           "local_remove": "Lokale toegang voor deze gateway verwijderen"
         }
       }
     },
     "error": {
       "local_cannot_connect": "Gateway niet bereikbaar. Controleer het adres. Let op: de gateway opent de leespoort pas zodra er een token bestaat — bij het eerste token is dit dus normaal totdat deze stap lukt.",
+      "local_invalid_token": "De gateway heeft dit token geweigerd. Controleer of het volledig is gekopieerd, of koppel met Login en Pass.",
+      "local_wrong_gateway": "Dit token of adres hoort bij een andere gateway. Controleer het adres en het token.",
       "local_invalid_auth": "De gateway heeft Login of Pass geweigerd. Vergelijk ze met het label; Pass wordt zonder streepjes verzonden (automatisch).",
       "local_proximity_required": "De gateway wil bewijs dat je ernaast staat. Houd de WLAN- en Wireless-knoppen een seconde samen ingedrukt en verzend binnen vijf minuten opnieuw.",
       "local_token_store_full": "De gateway kan geen extra token opslaan. Trek een ongebruikt token in en probeer het opnieuw."
     },
     "abort": {
-      "no_k40_gateway": "Voor dit account is geen K40- of K30-gateway geconfigureerd."
+      "no_k40_gateway": "Voor dit account is geen K 40 RF-gateway geconfigureerd. De lokale API is niet beschikbaar op de K 30 RF."
     }
   },
   "entity": {
@@ -267,6 +270,9 @@
       },
       "pool_additional_heater_mode": {
         "name": "Zwembad bijverwarming"
+      },
+      "hc1_control_type": {
+        "name": "Circuit 1 regeltype"
       }
     },
     "sensor": {
@@ -356,8 +362,17 @@
       "outdoor_temp": {
         "name": "Buitentemperatuur"
       },
+      "hs_brine_inflow_temp": {
+        "name": "Bron-collector aanvoertemperatuur"
+      },
+      "hs_brine_outflow_temp": {
+        "name": "Bron-collector retourtemperatuur"
+      },
       "notifications": {
-        "name": "Meldingen"
+        "name": "Meldingen",
+        "state": {
+          "none": "Geen"
+        }
       },
       "energy_history_hourly": {
         "name": "Energiegeschiedenis (uurlijks)"
@@ -410,8 +425,17 @@
       "dhw_outlet_temperature": {
         "name": "Uitgangstemperatuur"
       },
+      "dhw_wddw2_temperature": {
+        "name": "Boilertemperatuur"
+      },
       "dhw_water_flow": {
         "name": "Waterstroom"
+      },
+      "dhw_delta_t": {
+        "name": "Temperatuurverschil"
+      },
+      "dhw_heating_active": {
+        "name": "Waterverwarming"
       },
       "dhw_heat_source_starts": {
         "name": "Bedrijfscycli"
@@ -581,6 +605,18 @@
       },
       "pool_setpoint_temp": {
         "name": "Zwembad instelwaarde"
+      },
+      "hc1_max_flow_temp": {
+        "name": "Circuit 1 max. aanvoertemperatuur"
+      },
+      "hc1_suwi_threshold": {
+        "name": "Circuit 1 zomer/winter-drempel"
+      },
+      "hc1_comfort2": {
+        "name": "Circuit 1 comfort-instelwaarde"
+      },
+      "hc1_eco": {
+        "name": "Circuit 1 eco-instelwaarde"
       }
     },
     "button": {

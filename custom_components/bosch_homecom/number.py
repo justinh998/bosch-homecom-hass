@@ -78,6 +78,8 @@ async def async_setup_entry(
             dhw_dur = coordinator.extra_data.get("dhw_charge_duration")
             if isinstance(dhw_dur, dict) and dhw_dur.get("writeable"):
                 entities.append(BoschComK40DhwChargeDurationNumber(coordinator))
+            if isinstance(coordinator, BoschComModuleCoordinatorK40):
+                entities.extend(_build_k40_hc_tune_numbers(coordinator))
 
     async_add_entities(entities)
 
@@ -737,4 +739,90 @@ class BoschComK40PoolSetpointNumber(CoordinatorEntity, NumberEntity):
     def _handle_coordinator_update(self) -> None:
         """Handle updated data."""
         self._attr_native_value = self._value()
+        self.async_write_ha_state()
+
+
+# HC_TUNE_ENDPOINTS numbers -> step used when the device sends no stepSize.
+# The range has no fallback: without the device's own minValue/maxValue there
+# is no entity, since a guessed ceiling could let a floor-heating circuit run
+# hotter than its installer allowed.
+_HC_TUNE_NUMBER_STEPS: dict[str, float] = {
+    "hc1_max_flow_temp": 1.0,
+    "hc1_suwi_threshold": 1.0,
+    "hc1_comfort2": 0.5,
+    "hc1_eco": 0.5,
+}
+
+
+def _build_k40_hc_tune_numbers(coordinator: BoschComModuleCoordinatorK40) -> list:
+    """Writable weather-comp / UFH settings the device reports for hc1."""
+    entities = []
+    for key, default_step in _HC_TUNE_NUMBER_STEPS.items():
+        data = coordinator.extra_data.get(key)
+        if not (
+            isinstance(data, dict)
+            and data.get("writeable")
+            and data.get("value") is not None
+            and data.get("minValue") is not None
+            and data.get("maxValue") is not None
+        ):
+            continue
+        entities.append(
+            BoschComK40HcTuneNumber(
+                coordinator,
+                key=key,
+                min_value=float(data["minValue"]),
+                max_value=float(data["maxValue"]),
+                step=float(data.get("stepSize") or default_step),
+            )
+        )
+    return entities
+
+
+class BoschComK40HcTuneNumber(CoordinatorEntity, NumberEntity):
+    """Writable K40 heating-circuit temperature (max flow, SuWi, setpoints)."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_mode = NumberMode.BOX
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(
+        self,
+        coordinator: BoschComModuleCoordinatorK40,
+        *,
+        key: str,
+        min_value: float,
+        max_value: float,
+        step: float,
+    ) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        self._key = key
+        self._attr_translation_key = key
+        self._attr_device_info = coordinator.device_info
+        self._attr_unique_id = f"{coordinator.unique_id}-{key}"
+        self._attr_native_min_value = min_value
+        self._attr_native_max_value = max_value
+        self._attr_native_step = step
+
+    @property
+    def native_value(self) -> float | None:
+        """Return current value."""
+        data = self.coordinator.extra_data.get(self._key)
+        if not isinstance(data, dict):
+            return None
+        try:
+            return float(data["value"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Write the value to the device."""
+        await self.coordinator.async_set_hc_tune(self._key, float(value))
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data."""
         self.async_write_ha_state()

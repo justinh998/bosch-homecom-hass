@@ -184,6 +184,19 @@ async def async_setup_entry(
                     field="outdoor_temp",
                 )
             )
+            # Brine circuit collector temperatures (ground-source heat pumps).
+            # A unit without a brine circuit answers 404, which the library
+            # stores as None, so gate on the node so nothing dead is onboarded.
+            heat_sources = coordinator.data.heat_sources or {}
+            for field in BRINE_TEMP_FIELDS:
+                if isinstance(heat_sources.get(field), dict):
+                    entities.append(
+                        BoschComSensorHsBrineTemp(
+                            coordinator=coordinator,
+                            config_entry=config_entry,
+                            field=field,
+                        )
+                    )
             # Swimming pool current temperature
             if coordinator.data.pool:
                 entities.append(
@@ -319,9 +332,24 @@ async def async_setup_entry(
                         if stale_entity_id:
                             entity_registry.async_remove(stale_entity_id)
 
+                # Not every wddw2 carries every field. A Tronic TR4001 has
+                # no air box, so creating its descriptor anyway onboards an
+                # Air Box Temperature sensor that stays unknown for the life
+                # of the install. Skip a descriptor whose field the circuit
+                # does not report.
+                dhw_by_id = {
+                    ref["id"].split("/")[-1]: ref
+                    for ref in coordinator.data.dhw_circuits
+                    if re.fullmatch(r"dhw\d", ref["id"].split("/")[-1])
+                }
+
                 for desc in wddw2_desc:
                     for dhw_id in dhw_ids:
                         path = desc.get("path", [])
+                        circuit = dhw_by_id.get(dhw_id)
+                        field = path[-1] if path else None
+                        if circuit is not None and circuit.get(field) is None:
+                            continue
                         resolved_path = _resolve_path(path, dhw_id)
                         unique_suffix = f"{dhw_id}-{desc['key']}"
                         try:
@@ -348,7 +376,6 @@ async def async_setup_entry(
                 entities.append(
                     BoschComDerivedDeltaTSensor(
                         coordinator=coordinator,
-                        name="DHW Delta T",
                         unique_suffix="dhw1-delta_t",
                     )
                 )
@@ -359,7 +386,6 @@ async def async_setup_entry(
                 entities.append(
                     BoschComHeatingActiveBinarySensor(
                         coordinator=coordinator,
-                        name="DHW Heating Active",
                         unique_suffix="dhw1-heating_active",
                         delta_t_threshold=3.0,
                     )
@@ -1154,6 +1180,68 @@ class BoschComSensorVentilation(BoschComSensorBase):
         return {}
 
 
+# heat_sources node -> translation key. Read from
+# /heatSources/hs1/brineCircuit/collector{In,Out}flowTemp by homecom_alt.
+BRINE_TEMP_FIELDS: Final[dict[str, str]] = {
+    "collectorInflowTemp": "hs_brine_inflow_temp",
+    "collectorOutflowTemp": "hs_brine_outflow_temp",
+}
+
+
+class BoschComSensorHsBrineTemp(BoschComSensorBase):
+    """Brine circuit collector inflow or outflow temperature of a heat pump.
+
+    The heat-source sensor already carries both as string attributes; this
+    gives each a numeric, unit-aware entity that can be graphed and recorded.
+    """
+
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+
+    def __init__(
+        self,
+        coordinator: BoschComModuleCoordinatorK40,
+        config_entry: config_entries.ConfigEntry,
+        field: str,
+    ) -> None:
+        """Initialize the sensor."""
+        key = BRINE_TEMP_FIELDS[field]
+        super().__init__(
+            coordinator=coordinator,
+            config_entry=config_entry,
+            unique_id=f"{coordinator.unique_id}-{key}",
+            icon="mdi:thermometer-water",
+        )
+        self._attr_translation_key = key
+        self._attr_suggested_object_id = key
+        self._attr_should_poll = False
+        self.field = field
+
+    def _reading(self) -> dict:
+        node = (self.coordinator.data.heat_sources or {}).get(self.field)
+        return node if isinstance(node, dict) else {}
+
+    @property
+    def native_unit_of_measurement(self) -> str | None:
+        """Follow unitOfMeasure on a Fahrenheit system."""
+        if self._reading().get("unitOfMeasure") == "F":
+            return UnitOfTemperature.FAHRENHEIT
+        return self._attr_native_unit_of_measurement
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the collector temperature."""
+        value = self._reading().get("value")
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+
 class BoschComSensorOutdoorTemp(BoschComSensorBase):
     """BoschComSensorOutdoorTemp sensor."""
 
@@ -1533,8 +1621,11 @@ class BoschComSensorDhwWddw2(BoschComSensorBase):
             unique_id=f"{coordinator.unique_id}-{field}-sensor",
             icon="mdi:water-boiler",
         )
-        self._attr_translation_key = "dhw"
-        self._attr_translation_placeholders = {"circuit": field}
+        # A wddw2 has exactly one circuit, always called dhw1, so the shared
+        # "{circuit} temperature" name renders as "dhw1 temperature" and shows
+        # an internal id to the user. The K40 sensor above keeps the
+        # placeholder, where several circuits do exist.
+        self._attr_translation_key = "dhw_wddw2_temperature"
         self._attr_unique_id = f"{coordinator.unique_id}-{field}"
         self._attr_suggested_object_id = field + "_sensor"
         self._attr_should_poll = False
@@ -1731,10 +1822,10 @@ class BoschComGenericSensor(CoordinatorEntity, SensorEntity):
 class BoschComDerivedDeltaTSensor(CoordinatorEntity, SensorEntity):
     """Derived sensor: delta T = outlet - inlet."""
 
-    def __init__(self, coordinator, name: str, unique_suffix: str):
+    def __init__(self, coordinator, unique_suffix: str):
         super().__init__(coordinator)
         self._attr_has_entity_name = True
-        self._attr_name = name
+        self._attr_translation_key = "dhw_delta_t"
         self._attr_unique_id = f"{coordinator.unique_id}-{unique_suffix}"
         self._attr_device_info = coordinator.device_info
         self._attr_device_class = SensorDeviceClass.TEMPERATURE
@@ -1823,14 +1914,13 @@ class BoschComHeatingActiveBinarySensor(CoordinatorEntity, BinarySensorEntity):
     def __init__(
         self,
         coordinator,
-        name: str,
         unique_suffix: str,
         *,
         delta_t_threshold: float = 3.0,
     ):
         super().__init__(coordinator)
         self._attr_has_entity_name = True
-        self._attr_name = name
+        self._attr_translation_key = "dhw_heating_active"
         self._attr_unique_id = f"{coordinator.unique_id}-{unique_suffix}"
         self._attr_device_info = coordinator.device_info
         self._delta_t_threshold = delta_t_threshold

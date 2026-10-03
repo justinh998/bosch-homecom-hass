@@ -341,10 +341,11 @@ class BoschHomeComOptionsFlowHandler(config_entries.OptionsFlowWithReload):
         self._local_gateway: str | None = None
 
     def _k40_gateways(self) -> dict[str, str]:
-        """Return {device_id: label} for the configured K40-family gateways.
+        """Return {device_id: label} for the configured K 40 RF gateways.
 
-        Only k40/k30 gateways are offered: the Local API is a K 40 RF feature and
-        the other device types have no equivalent.
+        Only k40 gateways are offered. The Local API is a K 40 RF / MX400
+        feature: a K 30 RF has neither the buttons nor the token port, so a
+        request from it only ever fails with "not reachable" (#186).
         """
         selected = self._entry.data.get(CONF_DEVICES) or {}
         gateways: dict[str, str] = {}
@@ -352,7 +353,7 @@ class BoschHomeComOptionsFlowHandler(config_entries.OptionsFlowWithReload):
             if not enabled or not isinstance(key, str) or "_" not in key:
                 continue
             device_id, _, device_type = key.rpartition("_")
-            if device_type in ("k40", "k30"):
+            if device_type == "k40":
                 gateways[device_id] = f"{device_id} ({device_type})"
         return gateways
 
@@ -388,6 +389,9 @@ class BoschHomeComOptionsFlowHandler(config_entries.OptionsFlowWithReload):
     async def async_step_local_credentials(self, user_input=None) -> FlowResult:
         """Collect the gateway address and label credentials, then get a token.
 
+        Alternatively the user pastes a token they already have, which is
+        verified against the gateway and stored as-is.
+
         The gateway only issues a token while it can prove physical proximity, so
         the user has to press its WLAN and Wireless buttons within five minutes
         before submitting. That instruction lives in the step description.
@@ -401,42 +405,49 @@ class BoschHomeComOptionsFlowHandler(config_entries.OptionsFlowWithReload):
                 return self._save_local(None)
 
             host = user_input[CONF_LOCAL_HOST].strip()
-            client = HomeComK40Local(
-                async_get_clientsession(self.hass),
-                host,
-                device_id=self._local_gateway,
-            )
-            try:
-                await client.async_create_token(
-                    user_input[CONF_LOCAL_LOGIN],
-                    user_input[CONF_LOCAL_PASSWORD],
-                    LOCAL_CLIENT_NAME,
-                )
-            except ProximityRequiredError:
-                # Not a credential problem: the button press is missing or the
-                # five-minute window expired.
-                errors["base"] = "local_proximity_required"
-            except TokenStoreFullError:
-                errors["base"] = "local_token_store_full"
-            except AuthFailedError:
-                errors["base"] = "local_invalid_auth"
-            except (NotRespondingError, ClientConnectorError, TimeoutError):
-                errors["base"] = "local_cannot_connect"
-            except ApiError:
-                # Wrong Login/Pass comes back as 400 invalid_grant.
-                errors["base"] = "local_invalid_auth"
-            except Exception:  # noqa: BLE001
-                _LOGGER.exception("Unexpected error creating a local access token")
-                errors["base"] = "unknown"
+            if token := user_input.get(CONF_LOCAL_TOKEN, "").strip():
+                # An existing token needs no Login/Pass and no button press.
+                error = await self._async_verify_local_token(host, token)
+                if error is None:
+                    return await self._async_adopt_local_token(host, token, existing)
+                errors["base"] = error
             else:
-                token_id = await self._async_new_token_id(client, existing)
-                # Re-provisioning replaces the token, so drop the old one or the
-                # gateway's store fills up and starts answering 507.
-                await self._async_revoke_local_token(existing, client)
-                config = {CONF_LOCAL_HOST: host, CONF_LOCAL_TOKEN: client.token}
-                if token_id is not None:
-                    config[CONF_LOCAL_TOKEN_ID] = token_id
-                return self._save_local(config)
+                client = HomeComK40Local(
+                    async_get_clientsession(self.hass),
+                    host,
+                    device_id=self._local_gateway,
+                )
+                try:
+                    await client.async_create_token(
+                        user_input[CONF_LOCAL_LOGIN],
+                        user_input[CONF_LOCAL_PASSWORD],
+                        LOCAL_CLIENT_NAME,
+                    )
+                except ProximityRequiredError:
+                    # Not a credential problem: the button press is missing or the
+                    # five-minute window expired.
+                    errors["base"] = "local_proximity_required"
+                except TokenStoreFullError:
+                    errors["base"] = "local_token_store_full"
+                except AuthFailedError:
+                    errors["base"] = "local_invalid_auth"
+                except (NotRespondingError, ClientConnectorError, TimeoutError):
+                    errors["base"] = "local_cannot_connect"
+                except ApiError:
+                    # Wrong Login/Pass comes back as 400 invalid_grant.
+                    errors["base"] = "local_invalid_auth"
+                except Exception:  # noqa: BLE001
+                    _LOGGER.exception("Unexpected error creating a local access token")
+                    errors["base"] = "unknown"
+                else:
+                    token_id = await self._async_new_token_id(client, existing)
+                    # Re-provisioning replaces the token, so drop the old one or the
+                    # gateway's store fills up and starts answering 507.
+                    await self._async_revoke_local_token(existing, client)
+                    config = {CONF_LOCAL_HOST: host, CONF_LOCAL_TOKEN: client.token}
+                    if token_id is not None:
+                        config[CONF_LOCAL_TOKEN_ID] = token_id
+                    return self._save_local(config)
 
             return self.async_show_form(
                 step_id="local_credentials",
@@ -451,6 +462,51 @@ class BoschHomeComOptionsFlowHandler(config_entries.OptionsFlowWithReload):
             description_placeholders={"gateway": self._local_gateway or ""},
             errors=errors,
         )
+
+    async def _async_verify_local_token(self, host: str, token: str) -> str | None:
+        """Prove a pasted token against the gateway before storing it.
+
+        Returns an error key, or ``None`` when the token works. A bad token
+        answers 401; any other answer comes after authentication and proves it.
+        ``/system/basicInfo`` also names the gateway, which catches a token or
+        address that belongs to a different one.
+        """
+        client = HomeComK40Local(
+            async_get_clientsession(self.hass),
+            host,
+            token,
+            device_id=self._local_gateway,
+        )
+        try:
+            info = await client.async_get_resource("/system/basicInfo")
+        except AuthFailedError:
+            return "local_invalid_token"
+        except (NotRespondingError, ClientConnectorError, TimeoutError):
+            return "local_cannot_connect"
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Unexpected error verifying a local access token")
+            return "unknown"
+        gateway_id = (info or {}).get("gatewayId")
+        if gateway_id is not None and str(gateway_id) != self._local_gateway:
+            return "local_wrong_gateway"
+        return None
+
+    async def _async_adopt_local_token(
+        self, host: str, token: str, existing: dict
+    ) -> FlowResult:
+        """Store a verified pasted token for the selected gateway.
+
+        Its token id is unknown, so it is never revoked by this integration. Only
+        a different token replaces (and revokes) the configured one: re-entering
+        the same token, e.g. to change the address, must not revoke it.
+        """
+        config = {CONF_LOCAL_HOST: host, CONF_LOCAL_TOKEN: token}
+        if token == existing.get(CONF_LOCAL_TOKEN):
+            if token_id := existing.get(CONF_LOCAL_TOKEN_ID):
+                config[CONF_LOCAL_TOKEN_ID] = token_id
+        else:
+            await self._async_revoke_local_token(existing)
+        return self._save_local(config)
 
     async def _async_new_token_id(
         self, client: HomeComK40Local, existing: dict
@@ -520,6 +576,7 @@ class BoschHomeComOptionsFlowHandler(config_entries.OptionsFlowWithReload):
                 vol.Required(CONF_LOCAL_HOST, default=host_default): cv.string,
                 vol.Optional(CONF_LOCAL_LOGIN, default=""): cv.string,
                 vol.Optional(CONF_LOCAL_PASSWORD, default=""): cv.string,
+                vol.Optional(CONF_LOCAL_TOKEN, default=""): cv.string,
                 vol.Optional(CONF_LOCAL_REMOVE, default=False): cv.boolean,
             }
         )

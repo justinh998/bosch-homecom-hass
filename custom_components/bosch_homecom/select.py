@@ -1,10 +1,13 @@
 """Bosch HomeCom Custom Component."""
 
 from datetime import timedelta
+from typing import Any
 
 from homeassistant import config_entries, core
 from homeassistant.components.select import SelectEntity
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -244,6 +247,8 @@ async def async_setup_entry(
                         "async_put_silent_mode",
                     )
                 )
+            if isinstance(coordinator, BoschComModuleCoordinatorK40):
+                entities.extend(_build_k40_hc_control_type_select(coordinator))
 
     async_add_entities(entities)
 
@@ -721,19 +726,22 @@ def _suwi_source(entry: dict) -> str | None:
     """Pick the heating-circuit resource the summer/winter select reads and writes.
 
     ``suWiSwitchMode`` is the setting; ``currentSuWiMode`` only reports the mode
-    the controller is in and is read-only on the gateways seen so far, so writes
-    to it were refused and the option reverted on the next poll (#170). It is
-    kept as a fallback for a gateway that does not expose the setting, unless it
-    is explicitly flagged read-only.
+    the controller is in and the cloud refuses writes to it (#170). A writable
+    setting wins. Otherwise the select is still created from ``currentSuWiMode``
+    so the mode stays visible, and a write is rejected with a clear error
+    instead of being silently dropped: v1.4.5 dropped the entity on any gateway
+    that flags it read-only, which took the select away from every K30 (#186).
     """
-    for key in ("suWiSwitchMode", "currentSuWiMode"):
-        node = entry.get(key)
-        if (
-            isinstance(node, dict)
-            and node.get("allowedValues")
-            and node.get("writeable", 1)
-        ):
-            return key
+    setting = entry.get("suWiSwitchMode")
+    if (
+        isinstance(setting, dict)
+        and setting.get("allowedValues")
+        and setting.get("writeable", 1)
+    ):
+        return "suWiSwitchMode"
+    status = entry.get("currentSuWiMode")
+    if isinstance(status, dict) and status.get("allowedValues"):
+        return "currentSuWiMode"
     return None
 
 
@@ -762,8 +770,29 @@ class BoschComSelectHcSuwiMode(CoordinatorEntity, SelectEntity):
         self.field = field
         self._source = source
 
+    def _node(self) -> dict:
+        for entry in self.coordinator.data.heating_circuits or []:
+            if entry.get("id") == "/heatingCircuits/" + self.field:
+                return entry.get(self._source) or {}
+        return {}
+
+    @property
+    def _writable(self) -> bool:
+        """Whether the gateway accepts writes to the resource this select uses."""
+        return bool(self._node().get("writeable", 1))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose the resource and whether it can be written."""
+        return {"source": self._source, "writable": self._writable}
+
     async def async_select_option(self, option: str) -> None:
         """Set the option."""
+        if not self._writable:
+            raise HomeAssistantError(
+                f"{self.field} summer/winter mode is read-only on this gateway: "
+                f"the cloud does not accept writes to {self._source}"
+            )
         bhc = self._coordinator.bhc
         put = (
             bhc.async_put_hc_suwi_switch_mode
@@ -1398,4 +1427,58 @@ class BoschComK40ExtraSelect(CoordinatorEntity, SelectEntity):
         data = self.coordinator.extra_data.get(self._key)
         if data and isinstance(data, dict):
             self._attr_current_option = data.get("value")
+        self.async_write_ha_state()
+
+
+def _build_k40_hc_control_type_select(
+    coordinator: BoschComModuleCoordinatorK40,
+) -> list:
+    """The hc1 controlType select, when the device reports it as writable."""
+    data = coordinator.extra_data.get("hc1_control_type")
+    if not (
+        isinstance(data, dict) and data.get("writeable") and data.get("allowedValues")
+    ):
+        return []
+    return [
+        BoschComK40HcControlTypeSelect(
+            coordinator, allowed_values=list(data["allowedValues"])
+        )
+    ]
+
+
+class BoschComK40HcControlTypeSelect(CoordinatorEntity, SelectEntity):
+    """Select for K40 heating-circuit controlType (wdcsimplified / wdcoptimized)."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_translation_key = "hc1_control_type"
+
+    def __init__(
+        self,
+        coordinator: BoschComModuleCoordinatorK40,
+        *,
+        allowed_values: list[str],
+    ) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        self._attr_device_info = coordinator.device_info
+        self._attr_unique_id = f"{coordinator.unique_id}-hc1_control_type"
+        self._attr_options = allowed_values
+
+    @property
+    def current_option(self) -> str | None:
+        """Return current control type."""
+        data = self.coordinator.extra_data.get("hc1_control_type")
+        if isinstance(data, dict):
+            return data.get("value")
+        return None
+
+    async def async_select_option(self, option: str) -> None:
+        """Write control type."""
+        await self.coordinator.async_set_hc_tune("hc1_control_type", option)
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data."""
         self.async_write_ha_state()

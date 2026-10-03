@@ -77,23 +77,26 @@
       },
       "local_credentials": {
         "title": "Lokaler Netzwerkzugriff",
-        "description": "Gateway {gateway} über das lokale Netzwerk lesen statt nur über die Bosch-Cloud. Nur lesend: Die Steuerung läuft weiterhin vollständig über die Cloud.\n\nErfordert Gateway-Firmware 15.00.01 oder neuer.\n\n**Vor dem Absenden:** die Tasten WLAN und Wireless am Gateway gleichzeitig etwa eine Sekunde drücken. Die LEDs blinken kurz blau, danach akzeptiert das Gateway fünf Minuten lang eine Token-Anfrage.\n\nLogin und Pass vom Aufkleber des Gateways eingeben. Bindestriche in Pass werden automatisch entfernt. Das Token wird gespeichert und wiederverwendet, der Vorgang ist also nur einmal nötig.\n\nZum Abschalten des lokalen Zugriffs das Entfernen-Feld ankreuzen.",
+        "description": "Gateway {gateway} über das lokale Netzwerk lesen statt nur über die Bosch-Cloud. Nur lesend: Die Steuerung läuft weiterhin vollständig über die Cloud.\n\nErfordert Gateway-Firmware 15.00.01 oder neuer.\n\n**Vor dem Absenden:** die Tasten WLAN und Wireless am Gateway gleichzeitig etwa eine Sekunde drücken. Die LEDs blinken kurz blau, danach akzeptiert das Gateway fünf Minuten lang eine Token-Anfrage.\n\nLogin und Pass vom Aufkleber des Gateways eingeben. Bindestriche in Pass werden automatisch entfernt. Das Token wird gespeichert und wiederverwendet, der Vorgang ist also nur einmal nötig.\n\n**Schon ein Token** für dieses Gateway vorhanden, z. B. aus einer anderen Integration? Dann stattdessen ins Token-Feld einfügen; Login, Pass und der Tastendruck entfallen. Ein eingefügtes Token wird von dieser Integration nie widerrufen.\n\nZum Abschalten des lokalen Zugriffs das Entfernen-Feld ankreuzen.",
         "data": {
           "local_host": "Hostname oder IP-Adresse des Gateways",
           "local_login": "Login (vom Gateway-Aufkleber)",
           "local_password": "Pass (vom Gateway-Aufkleber)",
+          "local_token": "Vorhandenes Zugriffstoken (statt Login und Pass)",
           "local_remove": "Lokalen Zugriff für dieses Gateway entfernen"
         }
       }
     },
     "error": {
       "local_cannot_connect": "Gateway nicht erreichbar. Adresse prüfen. Hinweis: Das Gateway gibt den Leseport erst frei, wenn ein Token existiert — beim ersten Token ist das also normal, bis dieser Schritt erfolgreich ist.",
+      "local_invalid_token": "Das Gateway hat dieses Token abgelehnt. Prüfen, ob es vollständig kopiert wurde, oder stattdessen mit Login und Pass koppeln.",
+      "local_wrong_gateway": "Token oder Adresse gehören zu einem anderen Gateway. Bitte Adresse und Token prüfen.",
       "local_invalid_auth": "Das Gateway hat Login oder Pass abgelehnt. Bitte mit dem Aufkleber vergleichen; Pass wird ohne Bindestriche gesendet (automatisch).",
       "local_proximity_required": "Das Gateway verlangt einen Nachweis, dass du davor stehst. Die Tasten WLAN und Wireless eine Sekunde gleichzeitig drücken und innerhalb von fünf Minuten erneut absenden.",
       "local_token_store_full": "Das Gateway kann kein weiteres Token speichern. Ein nicht benötigtes Token widerrufen und erneut versuchen."
     },
     "abort": {
-      "no_k40_gateway": "Für dieses Konto ist kein K40- oder K30-Gateway konfiguriert."
+      "no_k40_gateway": "Für dieses Konto ist kein K 40 RF-Gateway konfiguriert. Die lokale API ist auf dem K 30 RF nicht verfügbar."
     }
   },
   "entity": {
@@ -269,6 +272,9 @@
       },
       "pool_additional_heater_mode": {
         "name": "Pool Zuheizer"
+      },
+      "hc1_control_type": {
+        "name": "Heizkreis 1 Regelungsart"
       }
     },
     "sensor": {
@@ -358,8 +364,17 @@
       "outdoor_temp": {
         "name": "Außentemperatur"
       },
+      "hs_brine_inflow_temp": {
+        "name": "Sole-Kollektor Vorlauftemperatur"
+      },
+      "hs_brine_outflow_temp": {
+        "name": "Sole-Kollektor Rücklauftemperatur"
+      },
       "notifications": {
-        "name": "Benachrichtigungen"
+        "name": "Benachrichtigungen",
+        "state": {
+          "none": "Keine"
+        }
       },
       "energy_history_hourly": {
         "name": "Energieverlauf (stündlich)"
@@ -412,8 +427,17 @@
       "dhw_outlet_temperature": {
         "name": "Ausgangstemperatur"
       },
+      "dhw_wddw2_temperature": {
+        "name": "Warmwassertemperatur"
+      },
       "dhw_water_flow": {
         "name": "Wasserdurchfluss"
+      },
+      "dhw_delta_t": {
+        "name": "Temperaturdifferenz"
+      },
+      "dhw_heating_active": {
+        "name": "Wassererwärmung"
       },
       "dhw_heat_source_starts": {
         "name": "Betriebszyklen"
@@ -583,6 +607,18 @@
       },
       "pool_setpoint_temp": {
         "name": "Pool Sollwert"
+      },
+      "hc1_max_flow_temp": {
+        "name": "Heizkreis 1 max. Vorlauftemperatur"
+      },
+      "hc1_suwi_threshold": {
+        "name": "Heizkreis 1 Sommer/Winter-Schwelle"
+      },
+      "hc1_comfort2": {
+        "name": "Heizkreis 1 Komfort-Sollwert"
+      },
+      "hc1_eco": {
+        "name": "Heizkreis 1 Eco-Sollwert"
       }
     },
     "button": {

@@ -7,6 +7,7 @@ coordinator's local-first behaviour, and the local-only sensors.
 from unittest.mock import AsyncMock, Mock, patch
 
 from homeassistant.const import CONF_TOKEN, CONF_USERNAME
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from homecom_alt import (
     ApiError,
@@ -19,7 +20,10 @@ from homecom_alt import (
     TokenStoreFullError,
 )
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    MockEntityPlatform,
+)
 
 from custom_components.bosch_homecom.const import (
     CONF_DEVICES,
@@ -34,7 +38,10 @@ from custom_components.bosch_homecom.const import (
     DOMAIN,
     MAX_CLOUD_FAILURES_WITH_LOCAL,
 )
-from custom_components.bosch_homecom.coordinator import BoschComModuleCoordinatorK40
+from custom_components.bosch_homecom.coordinator import (
+    HC_TUNE_ENDPOINTS,
+    BoschComModuleCoordinatorK40,
+)
 from custom_components.bosch_homecom.diagnostics import (
     async_get_config_entry_diagnostics,
 )
@@ -138,6 +145,8 @@ def _coordinator(hass, entry, device, firmware, *, local=True):
     bhc.async_get_additional_heater_mode = AsyncMock(return_value={"value": "off"})
     bhc.async_get_silent_mode = AsyncMock(return_value={"value": "off"})
     bhc.async_get_dhw_charge_duration = AsyncMock(return_value={"value": 60})
+    for getter, _setter in HC_TUNE_ENDPOINTS.values():
+        setattr(bhc, getter, AsyncMock(return_value=None))
     bhc.async_request_bulk = AsyncMock(return_value={})
     local_client = Mock() if local else None
     coordinator = BoschComModuleCoordinatorK40(
@@ -217,11 +226,16 @@ async def test_local_multiple_gateways_asks_which(hass):
 
 
 @pytest.mark.asyncio
-async def test_local_aborts_without_a_k40(hass):
-    """A cloud account with no k40/k30 has nothing to configure locally."""
+@pytest.mark.parametrize("devices", [{"999_rac": True}, {"888_k30": True}])
+async def test_local_aborts_without_a_k40(hass, devices):
+    """Only a K 40 RF can be configured locally.
+
+    A K 30 RF has no Local API (no buttons, no token port, not in Bosch's list
+    of applicable variants), so offering it only produced "not reachable" (#186).
+    """
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data={CONF_USERNAME: "user", CONF_DEVICES: {"999_rac": True}},
+        data={CONF_USERNAME: "user", CONF_DEVICES: devices},
     )
     entry.add_to_hass(hass)
     result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -468,6 +482,147 @@ async def test_local_credentials_error_mapping(hass, entry, exc, expected_error)
     assert not entry.data.get(CONF_LOCAL)
 
 
+def _basic_info(gateway_id=GATEWAY):
+    return {"id": "/system/basicInfo", "gatewayId": gateway_id, "values": []}
+
+
+@pytest.mark.asyncio
+async def test_pasted_token_is_verified_and_stored(hass, entry):
+    """A pasted token skips Login/Pass and the button press entirely."""
+    entry.add_to_hass(hass)
+    seen = {}
+
+    async def fake_get(self, path):
+        seen[path] = self.token
+        return _basic_info()
+
+    with patch(f"{_FLOW_CLIENT}.async_get_resource", new=fake_get), patch(
+        f"{_FLOW_CLIENT}.async_create_token", new=AsyncMock()
+    ) as create, patch.object(hass.config_entries, "async_schedule_reload") as reload:
+        result = await _configure_local(
+            hass,
+            entry,
+            {
+                CONF_LOCAL_HOST: f" {HOST} ",
+                CONF_LOCAL_LOGIN: "",
+                CONF_LOCAL_PASSWORD: "",
+                CONF_LOCAL_TOKEN: f"  {LOCAL_TOKEN}\n",
+                CONF_LOCAL_REMOVE: False,
+            },
+        )
+
+    assert result["type"] == "create_entry"
+    # Proven against the gateway with the pasted token before it is stored.
+    assert seen == {"/system/basicInfo": LOCAL_TOKEN}
+    create.assert_not_awaited()
+    stored = entry.data[CONF_LOCAL][GATEWAY]
+    assert stored == {CONF_LOCAL_HOST: HOST, CONF_LOCAL_TOKEN: LOCAL_TOKEN}
+    reload.assert_called_once_with(entry.entry_id)
+
+
+@pytest.mark.asyncio
+async def test_pasted_token_accepted_when_basic_info_is_absent(hass, entry):
+    """A 403/404 comes after authentication, so it still proves the token."""
+    entry.add_to_hass(hass)
+    with patch(
+        f"{_FLOW_CLIENT}.async_get_resource", new=AsyncMock(return_value=None)
+    ), patch.object(hass.config_entries, "async_schedule_reload"):
+        result = await _configure_local(
+            hass,
+            entry,
+            {CONF_LOCAL_HOST: HOST, CONF_LOCAL_TOKEN: LOCAL_TOKEN},
+        )
+
+    assert result["type"] == "create_entry"
+    assert entry.data[CONF_LOCAL][GATEWAY][CONF_LOCAL_TOKEN] == LOCAL_TOKEN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("get_resource", "expected_error"),
+    [
+        (AsyncMock(side_effect=AuthFailedError("401")), "local_invalid_token"),
+        (AsyncMock(side_effect=NotRespondingError("timeout")), "local_cannot_connect"),
+        (AsyncMock(side_effect=RuntimeError("boom")), "unknown"),
+        (AsyncMock(return_value=_basic_info("999999999")), "local_wrong_gateway"),
+    ],
+    ids=["401", "unreachable", "other", "other_gateway"],
+)
+async def test_pasted_token_error_mapping(hass, entry, get_resource, expected_error):
+    """A token that does not open this gateway is never stored."""
+    entry.add_to_hass(hass)
+    with patch(f"{_FLOW_CLIENT}.async_get_resource", new=get_resource):
+        result = await _configure_local(
+            hass,
+            entry,
+            {CONF_LOCAL_HOST: HOST, CONF_LOCAL_TOKEN: LOCAL_TOKEN},
+        )
+
+    assert result["step_id"] == "local_credentials"
+    assert result["errors"]["base"] == expected_error
+    assert not entry.data.get(CONF_LOCAL)
+
+
+@pytest.mark.asyncio
+async def test_pasted_token_replaces_and_revokes_the_old_one(hass, entry):
+    """A different pasted token frees the slot of the one it replaces."""
+    _with_local(
+        hass,
+        entry,
+        {CONF_LOCAL_HOST: HOST, CONF_LOCAL_TOKEN: "old", CONF_LOCAL_TOKEN_ID: "4"},
+    )
+    with patch(
+        f"{_FLOW_CLIENT}.async_get_resource", new=AsyncMock(return_value=_basic_info())
+    ), patch(
+        f"{_FLOW_CLIENT}.async_revoke_token", new=AsyncMock()
+    ) as revoke, patch.object(
+        hass.config_entries, "async_schedule_reload"
+    ):
+        await _configure_local(
+            hass,
+            entry,
+            {CONF_LOCAL_HOST: HOST, CONF_LOCAL_TOKEN: LOCAL_TOKEN},
+        )
+
+    revoke.assert_awaited_once_with("4")
+    stored = entry.data[CONF_LOCAL][GATEWAY]
+    assert stored == {CONF_LOCAL_HOST: HOST, CONF_LOCAL_TOKEN: LOCAL_TOKEN}
+
+
+@pytest.mark.asyncio
+async def test_re_entering_the_same_token_keeps_it(hass, entry):
+    """Changing only the address must not revoke the token being kept."""
+    _with_local(
+        hass,
+        entry,
+        {
+            CONF_LOCAL_HOST: HOST,
+            CONF_LOCAL_TOKEN: LOCAL_TOKEN,
+            CONF_LOCAL_TOKEN_ID: "4",
+        },
+    )
+    with patch(
+        f"{_FLOW_CLIENT}.async_get_resource", new=AsyncMock(return_value=_basic_info())
+    ), patch(
+        f"{_FLOW_CLIENT}.async_revoke_token", new=AsyncMock()
+    ) as revoke, patch.object(
+        hass.config_entries, "async_schedule_reload"
+    ):
+        await _configure_local(
+            hass,
+            entry,
+            {CONF_LOCAL_HOST: "192.0.2.20", CONF_LOCAL_TOKEN: LOCAL_TOKEN},
+        )
+
+    revoke.assert_not_awaited()
+    stored = entry.data[CONF_LOCAL][GATEWAY]
+    assert stored == {
+        CONF_LOCAL_HOST: "192.0.2.20",
+        CONF_LOCAL_TOKEN: LOCAL_TOKEN,
+        CONF_LOCAL_TOKEN_ID: "4",
+    }
+
+
 @pytest.mark.asyncio
 async def test_local_removal_clears_config(hass, entry):
     """Ticking the removal box deletes the stored local config."""
@@ -528,7 +683,7 @@ async def test_coordinator_without_local_uses_cloud_path(hass, entry, device, fi
 async def test_coordinator_both_transports_ok(hass, entry, device, firmware):
     """Cloud data is returned and the local payload is exposed alongside it."""
     entry.add_to_hass(hass)
-    coordinator, _ = _coordinator(hass, entry, device, firmware)
+    coordinator, bhc = _coordinator(hass, entry, device, firmware)
     local = _local_device()
     coordinator.local_first.async_update = AsyncMock(
         return_value=K40Update(
@@ -542,6 +697,8 @@ async def test_coordinator_both_transports_ok(hass, entry, device, firmware):
     assert coordinator.local_data is local
     assert coordinator.local_source == "both"
     assert coordinator.local_healthy is True
+    # The local path bypasses the mixin, so it must fetch the HC settings too.
+    bhc.async_get_hc_max_flow_temp.assert_awaited_once_with(device["deviceId"], "hc1")
 
 
 @pytest.mark.asyncio
@@ -772,6 +929,43 @@ async def test_local_sensor_reads_scalar_and_emon_values(hass, entry, device, fi
     assert power.native_value == 25.0
     assert starts.native_value == 129
     assert power.available is True
+
+
+@pytest.mark.asyncio
+async def test_local_sensors_add_to_the_platform(hass, entry, device, firmware, caplog):
+    """Every local sensor survives being added by Home Assistant (issue #184).
+
+    Adding reads fields such as ``suggested_unit_of_measurement`` from the
+    entity description, which a plain dataclass description lacks. Building the
+    entity directly, as the other tests do, never gets that far.
+    """
+    entry.add_to_hass(hass)
+    coordinator, _ = _coordinator(hass, entry, device, firmware)
+    coordinator.local_data = _local_device()
+    coordinator.local_healthy = True
+    sensors = [BoschComLocalSensor(coordinator, entry, d) for d in LOCAL_SENSORS]
+
+    platform = MockEntityPlatform(hass, domain="sensor", platform_name=DOMAIN)
+    await platform.async_add_entities(sensors)
+
+    assert "Error adding entity" not in caplog.text
+    registry = er.async_get(hass)
+    entries = {
+        sensor.entity_description.key: registry.async_get(sensor.entity_id)
+        for sensor in sensors
+    }
+    assert all(entries.values())
+    disabled = {key for key, reg in entries.items() if reg.disabled_by}
+    assert disabled == {
+        d.key for d in LOCAL_SENSORS if not d.entity_registry_enabled_default
+    }
+    assert len(disabled) == 5
+
+    power = hass.states.get(entries["local_compressor_power"].entity_id)
+    assert power.state == "25.0"
+    assert power.attributes["unit_of_measurement"] == "W"
+    assert power.attributes["device_class"] == "power"
+    assert power.attributes["state_class"] == "measurement"
 
 
 @pytest.mark.asyncio
